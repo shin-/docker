@@ -3,10 +3,12 @@ package docker
 import (
 	"archive/tar"
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"github.com/dotcloud/docker/auth"
+	"github.com/dotcloud/docker/registry"
 	"github.com/dotcloud/docker/term"
 	"github.com/dotcloud/docker/utils"
 	"io"
@@ -294,7 +296,7 @@ func (cli *DockerCli) CmdLogin(args ...string) error {
 		return readStringOnRawTerminal(stdin, stdout, false)
 	}
 
-	cmd := Subcmd("login", "[OPTIONS]", "Register or Login to the docker registry server")
+	cmd := Subcmd("login", "[OPTIONS] [SERVER]", "Register or Login to a docker registry server, if no server is specified \""+auth.IndexServerAddress()+"\" is the default.")
 	flUsername := cmd.String("u", "", "username")
 	flPassword := cmd.String("p", "", "password")
 	flEmail := cmd.String("e", "", "email")
@@ -302,9 +304,16 @@ func (cli *DockerCli) CmdLogin(args ...string) error {
 	if err != nil {
 		return nil
 	}
+	serverAddress := auth.IndexServerAddress()
+	if len(cmd.Args()) > 0 {
+		serverAddress, err = registry.ExpandAndVerifyRegistryUrl(cmd.Arg(0))
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(cli.out, "Login against server at %s\n", serverAddress)
+	}
 
 	cli.LoadConfigFile()
-
 	var oldState *term.State
 	if *flUsername == "" || *flPassword == "" || *flEmail == "" {
 		oldState, err = term.SetRawTerminal(cli.terminalFd)
@@ -328,7 +337,7 @@ func (cli *DockerCli) CmdLogin(args ...string) error {
 		}
 	}
 
-	authconfig, ok := cli.configFile.Configs[auth.IndexServerAddress()]
+	authconfig, ok := cli.configFile.Configs[serverAddress]
 	if !ok {
 		authconfig = auth.AuthConfig{}
 	}
@@ -372,11 +381,12 @@ func (cli *DockerCli) CmdLogin(args ...string) error {
 	authconfig.Username = username
 	authconfig.Password = password
 	authconfig.Email = email
-	cli.configFile.Configs[auth.IndexServerAddress()] = authconfig
+	authconfig.ServerAddress = serverAddress
+	cli.configFile.Configs[serverAddress] = authconfig
 
-	body, statusCode, err := cli.call("POST", "/auth", cli.configFile.Configs[auth.IndexServerAddress()])
+	body, statusCode, err := cli.call("POST", "/auth", cli.configFile.Configs[serverAddress])
 	if statusCode == 401 {
-		delete(cli.configFile.Configs, auth.IndexServerAddress())
+		delete(cli.configFile.Configs, serverAddress)
 		auth.SaveConfig(cli.configFile)
 		return err
 	}
@@ -848,6 +858,13 @@ func (cli *DockerCli) CmdPush(args ...string) error {
 
 	cli.LoadConfigFile()
 
+	// Resolve the Repository name from fqn to endpoint + name
+	endpoint, _, err := registry.ResolveRepositoryName(name)
+	if err != nil {
+		return err
+	}
+	// Resolve the Auth config relevant for this server
+	authConfig := cli.configFile.ResolveAuthConfig(endpoint)
 	// If we're not using a custom registry, we know the restrictions
 	// applied to repository names and can warn the user in advance.
 	// Custom repositories can have different rules, and we must also
@@ -861,8 +878,8 @@ func (cli *DockerCli) CmdPush(args ...string) error {
 	}
 
 	v := url.Values{}
-	push := func() error {
-		buf, err := json.Marshal(cli.configFile.Configs[auth.IndexServerAddress()])
+	push := func(authConfig auth.AuthConfig) error {
+		buf, err := json.Marshal(authConfig)
 		if err != nil {
 			return err
 		}
@@ -870,13 +887,14 @@ func (cli *DockerCli) CmdPush(args ...string) error {
 		return cli.stream("POST", "/images/"+name+"/push?"+v.Encode(), bytes.NewBuffer(buf), cli.out)
 	}
 
-	if err := push(); err != nil {
-		if err.Error() == "Authentication is required." {
+	if err := push(authConfig); err != nil {
+		if err.Error() == registry.ErrLoginRequired.Error() {
 			fmt.Fprintln(cli.out, "\nPlease login prior to push:")
-			if err := cli.CmdLogin(""); err != nil {
+			if err := cli.CmdLogin(endpoint); err != nil {
 				return err
 			}
-			return push()
+			authConfig := cli.configFile.ResolveAuthConfig(endpoint)
+			return push(authConfig)
 		}
 		return err
 	}
@@ -900,11 +918,40 @@ func (cli *DockerCli) CmdPull(args ...string) error {
 		*tag = parsedTag
 	}
 
+	// Resolve the Repository name from fqn to endpoint + name
+	endpoint, _, err := registry.ResolveRepositoryName(remote)
+	if err != nil {
+		return err
+	}
+
+	cli.LoadConfigFile()
+
+	// Resolve the Auth config relevant for this server
+	authConfig := cli.configFile.ResolveAuthConfig(endpoint)
+
 	v := url.Values{}
 	v.Set("fromImage", remote)
 	v.Set("tag", *tag)
 
-	if err := cli.stream("POST", "/images/create?"+v.Encode(), nil, cli.out); err != nil {
+	pull := func(authConfig auth.AuthConfig) error {
+		buf, err := json.Marshal(authConfig)
+		if err != nil {
+			return err
+		}
+		v.Set("authConfig", base64.URLEncoding.EncodeToString(buf))
+
+		return cli.stream("POST", "/images/create?"+v.Encode(), bytes.NewBuffer(buf), cli.out)
+	}
+
+	if err := pull(authConfig); err != nil {
+		if err.Error() == registry.ErrLoginRequired.Error() {
+			fmt.Fprintln(cli.out, "\nPlease login prior to push:")
+			if err := cli.CmdLogin(endpoint); err != nil {
+				return err
+			}
+			authConfig := cli.configFile.ResolveAuthConfig(endpoint)
+			return pull(authConfig)
+		}
 		return err
 	}
 
@@ -1790,7 +1837,6 @@ func (cli *DockerCli) LoadConfigFile() (err error) {
 	}
 	return err
 }
-
 func NewDockerCli(in io.ReadCloser, out, err io.Writer, proto, addr string) *DockerCli {
 	var (
 		isTerminal = false
