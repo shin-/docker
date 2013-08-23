@@ -883,8 +883,9 @@ func (cli *DockerCli) CmdPush(args ...string) error {
 		if err != nil {
 			return err
 		}
+		v.Set("authConfig", base64.URLEncoding.EncodeToString(buf))
 
-		return cli.stream("POST", "/images/"+name+"/push?"+v.Encode(), bytes.NewBuffer(buf), cli.out)
+		return cli.stream("POST", "/images/"+name+"/push?"+v.Encode(), nil, cli.out)
 	}
 
 	if err := push(authConfig); err != nil {
@@ -940,7 +941,7 @@ func (cli *DockerCli) CmdPull(args ...string) error {
 		}
 		v.Set("authConfig", base64.URLEncoding.EncodeToString(buf))
 
-		return cli.stream("POST", "/images/create?"+v.Encode(), bytes.NewBuffer(buf), cli.out)
+		return cli.stream("POST", "/images/create?"+v.Encode(), nil, cli.out)
 	}
 
 	if err := pull(authConfig); err != nil {
