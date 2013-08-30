@@ -395,7 +395,7 @@ func postImagesCreate(srv *Server, version float64, w http.ResponseWriter, r *ht
 	tag := r.Form.Get("tag")
 	repo := r.Form.Get("repo")
 
-	authEncoded := r.Form.Get("authConfig")
+	authEncoded := r.Header.Get("X-Registry-Auth")
 	authConfig := &auth.AuthConfig{}
 	if authEncoded != "" {
 		authJson := base64.NewDecoder(base64.URLEncoding, strings.NewReader(authEncoded))
@@ -495,7 +495,7 @@ func postImagesPush(srv *Server, version float64, w http.ResponseWriter, r *http
 	}
 	authConfig := &auth.AuthConfig{}
 
-	authEncoded := r.Form.Get("authConfig")
+	authEncoded := r.Header.Get("X-Registry-Auth")
 	if authEncoded != "" {
 		// the new format is to handle the authConfg as a parameter
 		authJson := base64.NewDecoder(base64.URLEncoding, strings.NewReader(authEncoded))

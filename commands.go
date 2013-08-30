@@ -128,7 +128,7 @@ func (cli *DockerCli) CmdInsert(args ...string) error {
 	v.Set("url", cmd.Arg(1))
 	v.Set("path", cmd.Arg(2))
 
-	if err := cli.stream("POST", "/images/"+cmd.Arg(0)+"/insert?"+v.Encode(), nil, cli.out); err != nil {
+	if err := cli.stream("POST", "/images/"+cmd.Arg(0)+"/insert?"+v.Encode(), nil, cli.out, nil); err != nil {
 		return err
 	}
 	return nil
@@ -839,7 +839,7 @@ func (cli *DockerCli) CmdImport(args ...string) error {
 	v.Set("tag", tag)
 	v.Set("fromSrc", src)
 
-	err := cli.stream("POST", "/images/create?"+v.Encode(), cli.in, cli.out)
+	err := cli.stream("POST", "/images/create?"+v.Encode(), cli.in, cli.out, nil)
 	if err != nil {
 		return err
 	}
@@ -885,9 +885,13 @@ func (cli *DockerCli) CmdPush(args ...string) error {
 		if err != nil {
 			return err
 		}
-		v.Set("authConfig", base64.URLEncoding.EncodeToString(buf))
+		registryAuthHeader := []string{
+			base64.URLEncoding.EncodeToString(buf),
+		}
 
-		return cli.stream("POST", "/images/"+name+"/push?"+v.Encode(), nil, cli.out)
+		return cli.stream("POST", "/images/"+name+"/push?"+v.Encode(), nil, cli.out, map[string][]string{
+			"X-Registry-Auth": registryAuthHeader,
+		})
 	}
 
 	if err := push(authConfig); err != nil {
@@ -941,9 +945,13 @@ func (cli *DockerCli) CmdPull(args ...string) error {
 		if err != nil {
 			return err
 		}
-		v.Set("authConfig", base64.URLEncoding.EncodeToString(buf))
+		registryAuthHeader := []string{
+			base64.URLEncoding.EncodeToString(buf),
+		}
 
-		return cli.stream("POST", "/images/create?"+v.Encode(), nil, cli.out)
+		return cli.stream("POST", "/images/create?"+v.Encode(), nil, cli.out, map[string][]string{
+			"X-Registry-Auth": registryAuthHeader,
+		})
 	}
 
 	if err := pull(authConfig); err != nil {
@@ -1188,7 +1196,7 @@ func (cli *DockerCli) CmdEvents(args ...string) error {
 		v.Set("since", *since)
 	}
 
-	if err := cli.stream("GET", "/events?"+v.Encode(), nil, cli.out); err != nil {
+	if err := cli.stream("GET", "/events?"+v.Encode(), nil, cli.out, nil); err != nil {
 		return err
 	}
 	return nil
@@ -1205,7 +1213,7 @@ func (cli *DockerCli) CmdExport(args ...string) error {
 		return nil
 	}
 
-	if err := cli.stream("GET", "/containers/"+cmd.Arg(0)+"/export", nil, cli.out); err != nil {
+	if err := cli.stream("GET", "/containers/"+cmd.Arg(0)+"/export", nil, cli.out, nil); err != nil {
 		return err
 	}
 	return nil
@@ -1496,7 +1504,7 @@ func (cli *DockerCli) CmdRun(args ...string) error {
 		}
 		v.Set("authConfig", base64.URLEncoding.EncodeToString(buf))
 
-		err = cli.stream("POST", "/images/create?"+v.Encode(), nil, cli.err)
+		err = cli.stream("POST", "/images/create?"+v.Encode(), nil, cli.err, nil)
 		if err != nil {
 			return err
 		}
@@ -1673,7 +1681,7 @@ func (cli *DockerCli) call(method, path string, data interface{}) ([]byte, int, 
 	return body, resp.StatusCode, nil
 }
 
-func (cli *DockerCli) stream(method, path string, in io.Reader, out io.Writer) error {
+func (cli *DockerCli) stream(method, path string, in io.Reader, out io.Writer, headers map[string][]string) error {
 	if (method == "POST" || method == "PUT") && in == nil {
 		in = bytes.NewReader([]byte{})
 	}
@@ -1686,6 +1694,13 @@ func (cli *DockerCli) stream(method, path string, in io.Reader, out io.Writer) e
 	if method == "POST" {
 		req.Header.Set("Content-Type", "plain/text")
 	}
+
+	if headers != nil {
+		for k, v := range headers {
+			req.Header[k] = v
+		}
+	}
+
 	dial, err := net.Dial(cli.proto, cli.addr)
 	if err != nil {
 		if strings.Contains(err.Error(), "connection refused") {
