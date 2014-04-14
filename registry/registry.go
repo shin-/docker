@@ -348,7 +348,16 @@ func (r *Registry) GetRepositoryData(remote string) (*RepositoryData, error) {
 	if res.Header.Get("X-Docker-Endpoints") != "" {
 		// The Registry's URL scheme has to match the Index'
 		for _, ep := range res.Header["X-Docker-Endpoints"] {
-			endpoints = append(endpoints, fmt.Sprintf("%s://%s/v1/", urlScheme, ep))
+			if strings.Contains(ep, ",") {
+				epList := strings.Split(ep, ",")
+				for _, epListElement := range epList {
+					endpoints = append(
+						endpoints,
+						fmt.Sprintf("%s://%s/v1/", urlScheme, strings.TrimSpace(epListElement)))
+				}
+			} else {
+				endpoints = append(endpoints, fmt.Sprintf("%s://%s/v1/", urlScheme, ep))
+			}
 		}
 	} else {
 		return nil, fmt.Errorf("Index response didn't contain any endpoints")
